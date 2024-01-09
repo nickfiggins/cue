@@ -988,7 +988,8 @@ func (x *SelectorExpr) resolve(c *OpContext, state vertexStatus) *Vertex {
 	// will otherwise be discarded and there will be no other chance to check
 	// the struct is valid.
 
-	return c.lookup(n, x.Src.Sel.Pos(), x.Sel, state)
+	pos := x.Src.Sel.Pos()
+	return c.lookup(n, pos, x.Sel, state)
 }
 
 // IndexExpr is like a selector, but selects an index.
@@ -1029,7 +1030,17 @@ func (x *IndexExpr) resolve(ctx *OpContext, state vertexStatus) *Vertex {
 	// the struct is valid.
 
 	f := ctx.Label(x.Index, i)
-	return ctx.lookup(n, x.Src.Index.Pos(), f, state)
+
+	// Within lookup, errors collected in ctx may be associated with n. This is
+	// correct if the error is generated within lookup, but not if it has
+	// already been generated at this point. We therefore bail out early here if
+	// we already have an error.
+	// TODO: this code can probably go once we have cleaned up error generation.
+	if ctx.errs != nil {
+		return nil
+	}
+	pos := x.Src.Index.Pos()
+	return ctx.lookup(n, pos, f, state)
 }
 
 // A SliceExpr represents a slice operation. (Not currently in spec.)

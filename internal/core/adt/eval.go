@@ -952,12 +952,13 @@ type nodeContext struct {
 	nextFree *nodeContext
 	refCount int
 
-	// Keep these two out of the nodeContextState to make them more accessible
+	// Keep node out of the nodeContextState to make them more accessible
 	// for source-level debuggers.
-	ctx  *OpContext
 	node *Vertex
 
 	nodeContextState
+
+	scheduler
 
 	// rootCloseContext should not be cloned as clones need to get their own
 	// copies of this. For this reason it is not included in nodeContextState,
@@ -1104,6 +1105,8 @@ func (n *nodeContext) clone() *nodeContext {
 	d.arcMap = append(d.arcMap, n.arcMap...)
 	d.notify = append(d.notify, n.notify...)
 
+	n.scheduler.cloneInto(&d.scheduler)
+
 	d.conjuncts = append(d.conjuncts, n.conjuncts...)
 	d.cyclicConjuncts = append(d.cyclicConjuncts, n.cyclicConjuncts...)
 	d.dynamicFields = append(d.dynamicFields, n.dynamicFields...)
@@ -1129,8 +1132,8 @@ func (c *OpContext) newNodeContext(node *Vertex) *nodeContext {
 		c.freeListNode = n.nextFree
 
 		*n = nodeContext{
-			ctx:  c,
-			node: node,
+			scheduler: scheduler{ctx: c},
+			node:      node,
 			nodeContextState: nodeContextState{
 				kind: TopKind,
 			},
@@ -1152,17 +1155,23 @@ func (c *OpContext) newNodeContext(node *Vertex) *nodeContext {
 			disjuncts:          n.disjuncts[:0],
 			buffer:             n.buffer[:0],
 		}
+		n.scheduler.clear()
+		n.scheduler.node = n
 
 		return n
 	}
 	c.stats.Allocs++
 
-	return &nodeContext{
-		ctx:  c,
+	n := &nodeContext{
+		scheduler: scheduler{
+			ctx: c,
+		},
 		node: node,
 
 		nodeContextState: nodeContextState{kind: TopKind},
 	}
+	n.scheduler.node = n
+	return n
 }
 
 func (v *Vertex) getNodeContext(c *OpContext, ref int) *nodeContext {
@@ -1219,6 +1228,7 @@ func (c *OpContext) freeNodeContext(n *nodeContext) {
 	c.freeListNode = n
 	n.node = nil
 	n.refCount = 0
+	n.scheduler.clear()
 }
 
 // TODO(perf): return a dedicated ConflictError that can track original
@@ -1321,6 +1331,8 @@ func (n *nodeContext) updateNodeType(k Kind, v Expr, id CloseInfo) bool {
 }
 
 func (n *nodeContext) done() bool {
+	// TODO(v0.7): verify that done() is checking for the right conditions in
+	// the new evaluator implementation.
 	return len(n.dynamicFields) == 0 &&
 		len(n.comprehensions) == 0 &&
 		len(n.exprs) == 0
@@ -1329,6 +1341,7 @@ func (n *nodeContext) done() bool {
 // finalDone is like done, but allows for cycle errors, which can be ignored
 // as they essentially indicate a = a & _.
 func (n *nodeContext) finalDone() bool {
+	// TODO(v0.7): update for new evaluator?
 	for _, x := range n.exprs {
 		if x.err.Code != CycleError {
 			return false

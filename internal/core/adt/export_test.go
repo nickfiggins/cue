@@ -14,6 +14,8 @@
 
 package adt
 
+import "strings"
+
 // The functions and types in this file are use to construct test cases for
 // fields_test.go and constraints_test.
 
@@ -37,14 +39,10 @@ func NewFieldTester(r Runtime) *FieldTester {
 	ctx := New(v, &Config{Runtime: r})
 	n := v.getNodeContext(ctx, 1)
 
-	n.rootCloseContext = &closeContext{
-		src: v,
-	}
-
 	return &FieldTester{
 		OpContext: ctx,
 		n:         n,
-		cc:        n.rootCloseContext,
+		cc:        v.rootCloseContext(),
 		Root:      v,
 	}
 }
@@ -53,18 +51,28 @@ func (x *FieldTester) Error() string {
 	if b, ok := x.n.node.BaseValue.(*Bottom); ok && b.Err != nil {
 		return b.Err.Error()
 	}
-	return ""
+	var errs []string
+	for _, a := range x.n.node.Arcs {
+		if b, ok := a.BaseValue.(*Bottom); ok && b.Err != nil {
+			errs = append(errs, b.Err.Error())
+		}
+	}
+	return strings.Join(errs, "\n")
 }
 
 type declaration func(cc *closeContext)
 
 // Run simulates a CUE evaluation of the given declarations.
 func (x *FieldTester) Run(sub ...declaration) {
-	x.cc.incDependent()
-	for _, s := range sub {
+	x.cc.incDependent(TEST, nil)
+	for i, s := range sub {
+		// We want to have i around for debugging purposes. Use i to avoid
+		// compiler error.
+		_ = i
 		s(x.cc)
 	}
-	x.cc.decDependent(x.n)
+	x.cc.decDependent(x.n.ctx, TEST, nil)
+	x.cc.decDependent(x.n.ctx, ROOT, nil) // REF(decrement:nodeDone)
 }
 
 // Def represents fields that define a definition, such that
@@ -77,15 +85,19 @@ func (x *FieldTester) Run(sub ...declaration) {
 //
 // For some unique #D.
 func (x *FieldTester) Def(sub ...declaration) declaration {
+	return x.spawn(closeDef, sub...)
+}
+
+func (x *FieldTester) spawn(t closeNodeType, sub ...declaration) declaration {
 	return func(cc *closeContext) {
 		ci := CloseInfo{cc: cc}
-		ci, dc := ci.spawnCloseContext(closeDef)
+		ci, dc := ci.spawnCloseContext(t)
 
-		dc.incDependent()
+		dc.incDependent(TEST, nil)
 		for _, sfn := range sub {
 			sfn(dc)
 		}
-		dc.decDependent(x.n)
+		dc.decDependent(x.n.ctx, TEST, nil)
 	}
 }
 
@@ -101,16 +113,14 @@ func (x *FieldTester) Def(sub ...declaration) declaration {
 //
 // For some #D: b: "bar".
 func (x *FieldTester) Embed(sub ...declaration) declaration {
-	return func(cc *closeContext) {
-		ci := CloseInfo{cc: cc}
-		ci, dc := ci.spawnCloseContext(closeEmbed)
+	return x.spawn(closeEmbed, sub...)
+}
 
-		dc.incDependent()
-		for _, sfn := range sub {
-			sfn(dc)
-		}
-		dc.decDependent(x.n)
-	}
+// Group represents fields and embeddings within a single set of curly braces.
+// This is used to test that an embedding of a closed value closes the struct
+// in which it is embedded.
+func (x *FieldTester) Group(sub ...declaration) declaration {
+	return x.spawn(0, sub...)
 }
 
 // EmbedDef represents fields that define a struct and embedded within the
@@ -160,7 +170,7 @@ func (x *FieldTester) field(label string, a any, dedup bool) declaration {
 		c.CloseInfo.FromDef = cc.isDef
 		c.CloseInfo.FromEmbed = cc.isEmbed
 
-		x.n.insertArc(f, ArcMember, c, dedup)
+		x.n.insertArc(f, ArcMember, c, c.CloseInfo, dedup)
 	}
 }
 

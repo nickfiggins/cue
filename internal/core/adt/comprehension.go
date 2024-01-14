@@ -274,14 +274,14 @@ func (c *OpContext) yield(
 	node *Vertex, // errors are associated with this node
 	env *Environment, // env for field for which this yield is called
 	comp *Comprehension,
-	state vertexStatus,
+	state combinedFlags,
 	f YieldFunc, // called for every result
 ) *Bottom {
 	s := &compState{
 		ctx:   c,
 		comp:  comp,
 		f:     f,
-		state: state,
+		state: state.vertexStatus(),
 	}
 	y := comp.Clauses[0]
 
@@ -391,7 +391,7 @@ func (n *nodeContext) processComprehension(d *envYield, state vertexStatus) *Bot
 			envs = append(envs, env)
 		}
 
-		if err := ctx.yield(d.vertex, d.env, d.comp, state, f); err != nil {
+		if err := ctx.yield(d.vertex, d.env, d.comp, oldOnly(state), f); err != nil {
 			if err.IsIncomplete() {
 				return err
 			}
@@ -426,12 +426,27 @@ func (n *nodeContext) processComprehension(d *envYield, state vertexStatus) *Bot
 	v := n.node
 	for c := d.leaf; c.parent != nil; c = c.parent {
 		v.updateArcType(c.arcType)
+		if v.ArcType == ArcNotPresent {
+			parent := v.Parent
+			b := parent.reportFieldCycleError(ctx, d.comp.Syntax.Pos(), v.Label)
+			d.envComprehension.vertex.state.addBottom(b)
+			ctx.current().err = b
+			ctx.current().state = taskFAILED
+			return nil
+		}
 		v = c.arc
 	}
 
 	id := d.id
 
 	for _, env := range d.envs {
+		if n.node.ArcType == ArcNotPresent {
+			b := n.node.reportFieldCycleError(ctx, d.comp.Syntax.Pos(), n.node.Label)
+			ctx.current().err = b
+			n.yield()
+			return nil
+		}
+
 		env = linkChildren(env, d.leaf)
 		n.addExprConjunct(Conjunct{env, d.expr, id}, state)
 	}

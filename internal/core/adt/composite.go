@@ -127,7 +127,7 @@ func (e *Environment) evalCached(c *OpContext, x Expr) Value {
 		// Save and restore errors to ensure that only relevant errors are
 		// associated with the cash.
 		err := c.errs
-		v = c.evalState(x, partial) // TODO: should this be finalized?
+		v = c.evalState(x, require(partial, allKnown)) // TODO: should this be finalized?
 		c.e, c.src = env, src
 		c.errs = err
 		if b, ok := v.(*Bottom); !ok || !b.IsIncomplete() {
@@ -157,12 +157,16 @@ type Vertex struct {
 	//   eval: *,   BaseValue: *   -- finalized
 	//
 	state *nodeContext
-	// TODO: move the following status fields to nodeContext.
+
+	// cc manages the closedness logic for this Vertex. It is created
+	// by rootCloseContext.
+	// TODO: move back to nodeContext, but be sure not to clone it.
+	cc *closeContext
 
 	// Label is the feature leading to this vertex.
 	Label Feature
 
-	// TODO: move the following status fields to nodeContext.
+	// TODO: move the following fields to nodeContext.
 
 	// status indicates the evaluation progress of this vertex.
 	status vertexStatus
@@ -191,11 +195,6 @@ type Vertex struct {
 	// set, for instance, after a Vertex is used as a source for comprehensions,
 	// or any other operation that relies on the set of arcs being constant.
 	LockArcs bool
-
-	// disallowedField means that this arc is not allowed according
-	// to the closedness rules. This is used to avoid duplicate error reporting.
-	// TODO: perhaps rename to notAllowedErrorEmitted.
-	disallowedField bool
 
 	// IsDynamic signifies whether this struct is computed as part of an
 	// expression and not part of the static evaluation tree.
@@ -243,6 +242,21 @@ type Vertex struct {
 	// Structs is a slice of struct literals that contributed to this value.
 	// This information is used to compute the topological sort of arcs.
 	Structs []*StructInfo
+}
+
+// rootCloseContext creates a closeContext for this Vertex or returns the
+// existing one.
+func (v *Vertex) rootCloseContext() *closeContext {
+	if v.cc == nil {
+		v.cc = &closeContext{
+			group:           &ConjunctGroup{},
+			parent:          nil,
+			src:             v,
+			parentConjuncts: v,
+		}
+		v.cc.incDependent(ROOT, nil) // matched in REF(decrement:nodeDone)
+	}
+	return v.cc
 }
 
 // newInlineVertex creates a Vertex that is needed for computation, but for
@@ -664,13 +678,13 @@ func (v *Vertex) Finalize(c *OpContext) {
 	// case the caller did not handle existing errors in the context.
 	err := c.errs
 	c.errs = nil
-	c.unify(v, finalized)
+	c.unify(v, final(finalized, allKnown))
 	c.errs = err
 }
 
 // CompleteArcs ensures the set of arcs has been computed.
 func (v *Vertex) CompleteArcs(c *OpContext) {
-	c.unify(v, conjuncts)
+	c.unify(v, final(conjuncts, allKnown))
 }
 
 func (v *Vertex) AddErr(ctx *OpContext, b *Bottom) {
@@ -968,7 +982,11 @@ func (v *Vertex) hasConjunct(c Conjunct) (added bool) {
 	default:
 		v.ArcType = ArcMember
 	}
-	for _, x := range v.Conjuncts {
+	return hasConjunct(v.Conjuncts, c)
+}
+
+func hasConjunct(cs []Conjunct, c Conjunct) bool {
+	for _, x := range cs {
 		// TODO: disregard certain fields from comparison (e.g. Refs)?
 		if x.CloseInfo.closeInfo == c.CloseInfo.closeInfo &&
 			x.x == c.x &&

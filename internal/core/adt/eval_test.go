@@ -25,6 +25,7 @@ import (
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/cuecontext"
 	"cuelang.org/go/cue/errors"
+	"cuelang.org/go/internal"
 	"cuelang.org/go/internal/core/adt"
 	"cuelang.org/go/internal/core/debug"
 	"cuelang.org/go/internal/core/eval"
@@ -52,7 +53,7 @@ func TestEval(t *testing.T) {
 	}
 
 	test.Run(t, func(tc *cuetxtar.Test) {
-		runEvalTest(tc, adt.DefaultVersion)
+		runEvalTest(tc, internal.DefaultVersion)
 	})
 }
 
@@ -69,6 +70,8 @@ var todoAlpha = map[string]string{
 }
 
 func TestEvalAlpha(t *testing.T) {
+	adt.DebugDeps = true // check unmatched dependencies.
+
 	test := cuetxtar.TxTarTest{
 		Root:     "../../../cue/testdata",
 		Name:     "evalalpha",
@@ -82,13 +85,14 @@ func TestEvalAlpha(t *testing.T) {
 	}
 
 	test.Run(t, func(t *cuetxtar.Test) {
-		runEvalTest(t, adt.DevVersion)
+		runEvalTest(t, internal.DevVersion)
 	})
 }
 
-func runEvalTest(t *cuetxtar.Test, version adt.EvaluatorVersion) {
+func runEvalTest(t *cuetxtar.Test, version internal.EvaluatorVersion) {
 	a := t.Instance()
-	r := runtime.New()
+	// TODO: use version once we implement disjunctions.
+	r := runtime.NewVersioned(internal.DefaultVersion)
 
 	v, err := r.Build(nil, a)
 	if err != nil {
@@ -101,9 +105,11 @@ func runEvalTest(t *cuetxtar.Test, version adt.EvaluatorVersion) {
 	ctx.Version = version
 	v.Finalize(ctx)
 
-	stats := ctx.Stats()
-	w := t.Writer("stats")
-	fmt.Fprintln(w, stats)
+	if version != internal.DevVersion {
+		stats := ctx.Stats()
+		w := t.Writer("stats")
+		fmt.Fprintln(w, stats)
+	}
 	// if n := stats.Leaks(); n > 0 {
 	// 	t.Skipf("%d leaks reported", n)
 	// }
@@ -130,8 +136,10 @@ func TestX(t *testing.T) {
 	var verbosity int
 	verbosity = 1 // comment to turn logging off.
 
-	var version adt.EvaluatorVersion
-	version = adt.DevVersion // comment to use default implementation.
+	adt.DebugDeps = true
+
+	var version internal.EvaluatorVersion
+	version = internal.DevVersion // comment to use default implementation.
 
 	in := `
 -- cue.mod/module.cue --
@@ -150,7 +158,7 @@ module: "mod.test"
 		t.Fatal(instance.Err)
 	}
 
-	r := runtime.New()
+	r := runtime.NewVersioned(version)
 
 	v, err := r.Build(nil, instance)
 	if err != nil {
@@ -164,7 +172,6 @@ module: "mod.test"
 
 	e := eval.New(r)
 	ctx := e.NewContext(v)
-	ctx.Version = version
 	v.Finalize(ctx)
 	adt.Verbosity = 0
 

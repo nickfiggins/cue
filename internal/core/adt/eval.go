@@ -73,7 +73,7 @@ var incompleteSentinel = &Bottom{
 // error.
 //
 // TODO: return *Vertex
-func (c *OpContext) evaluate(v *Vertex, r Resolver, state vertexStatus) Value {
+func (c *OpContext) evaluate(v *Vertex, r Resolver, state combinedFlags) Value {
 	if v.isUndefined() {
 		// Use node itself to allow for cycle detection.
 		c.unify(v, state)
@@ -150,7 +150,7 @@ func (c *OpContext) evaluate(v *Vertex, r Resolver, state vertexStatus) Value {
 // state can be used to indicate to which extent processing should continue.
 // state == finalized means it is evaluated to completion. See vertexStatus
 // for more details.
-func (c *OpContext) unify(v *Vertex, state vertexStatus) {
+func (c *OpContext) unify(v *Vertex, flags combinedFlags) {
 	// defer c.PopVertex(c.PushVertex(v))
 	if Debug {
 		c.nest++
@@ -165,6 +165,8 @@ func (c *OpContext) unify(v *Vertex, state vertexStatus) {
 	// not yet Finalized.
 	n := v.getNodeContext(c, 1)
 	defer v.freeNode(n)
+
+	state := flags.vertexStatus()
 
 	// TODO(cycle): verify this happens in all cases when we need it.
 	if n != nil && v.Parent != nil && v.Parent.state != nil {
@@ -467,7 +469,7 @@ func (n *nodeContext) postDisjunct(state vertexStatus) {
 		for n.maybeSetCache(); n.expandOne(state); n.maybeSetCache() {
 		}
 
-		if !n.addLists(state) {
+		if !n.addLists(oldOnly(state)) {
 			break
 		}
 	}
@@ -790,7 +792,7 @@ func (n *nodeContext) completeArcs(state vertexStatus) {
 
 			wasVoid := a.ArcType == ArcPending
 
-			ctx.unify(a, finalized)
+			ctx.unify(a, oldOnly(finalized))
 
 			if a.ArcType == ArcPending {
 				continue
@@ -844,7 +846,7 @@ func (n *nodeContext) completeArcs(state vertexStatus) {
 			// TODO(errors): make Validate return bottom and generate
 			// optimized conflict message. Also track and inject IDs
 			// to determine origin location.s
-			v := ctx.evalState(c.expr, finalized)
+			v := ctx.evalState(c.expr, oldOnly(finalized))
 			v, _ = ctx.getDefault(v)
 			v = Unwrap(v)
 
@@ -952,17 +954,13 @@ type nodeContext struct {
 	nextFree *nodeContext
 	refCount int
 
-	// Keep these two out of the nodeContextState to make them more accessible
+	// Keep node out of the nodeContextState to make them more accessible
 	// for source-level debuggers.
-	ctx  *OpContext
 	node *Vertex
 
 	nodeContextState
 
-	// rootCloseContext should not be cloned as clones need to get their own
-	// copies of this. For this reason it is not included in nodeContextState,
-	// as it prevents it from being set "by default".
-	rootCloseContext *closeContext
+	scheduler
 
 	// Below are slices that need to be managed when cloning and reclaiming
 	// nodeContexts for reuse. We want to ensure that, instead of setting
@@ -1104,6 +1102,8 @@ func (n *nodeContext) clone() *nodeContext {
 	d.arcMap = append(d.arcMap, n.arcMap...)
 	d.notify = append(d.notify, n.notify...)
 
+	n.scheduler.cloneInto(&d.scheduler)
+
 	d.conjuncts = append(d.conjuncts, n.conjuncts...)
 	d.cyclicConjuncts = append(d.cyclicConjuncts, n.cyclicConjuncts...)
 	d.dynamicFields = append(d.dynamicFields, n.dynamicFields...)
@@ -1129,8 +1129,8 @@ func (c *OpContext) newNodeContext(node *Vertex) *nodeContext {
 		c.freeListNode = n.nextFree
 
 		*n = nodeContext{
-			ctx:  c,
-			node: node,
+			scheduler: scheduler{ctx: c},
+			node:      node,
 			nodeContextState: nodeContextState{
 				kind: TopKind,
 			},
@@ -1152,17 +1152,23 @@ func (c *OpContext) newNodeContext(node *Vertex) *nodeContext {
 			disjuncts:          n.disjuncts[:0],
 			buffer:             n.buffer[:0],
 		}
+		n.scheduler.clear()
+		n.scheduler.node = n
 
 		return n
 	}
 	c.stats.Allocs++
 
-	return &nodeContext{
-		ctx:  c,
+	n := &nodeContext{
+		scheduler: scheduler{
+			ctx: c,
+		},
 		node: node,
 
 		nodeContextState: nodeContextState{kind: TopKind},
 	}
+	n.scheduler.node = n
+	return n
 }
 
 func (v *Vertex) getNodeContext(c *OpContext, ref int) *nodeContext {
@@ -1219,6 +1225,7 @@ func (c *OpContext) freeNodeContext(n *nodeContext) {
 	c.freeListNode = n
 	n.node = nil
 	n.refCount = 0
+	n.scheduler.clear()
 }
 
 // TODO(perf): return a dedicated ConflictError that can track original
@@ -1321,6 +1328,8 @@ func (n *nodeContext) updateNodeType(k Kind, v Expr, id CloseInfo) bool {
 }
 
 func (n *nodeContext) done() bool {
+	// TODO(v0.7): verify that done() is checking for the right conditions in
+	// the new evaluator implementation.
 	return len(n.dynamicFields) == 0 &&
 		len(n.comprehensions) == 0 &&
 		len(n.exprs) == 0
@@ -1329,6 +1338,7 @@ func (n *nodeContext) done() bool {
 // finalDone is like done, but allows for cycle errors, which can be ignored
 // as they essentially indicate a = a & _.
 func (n *nodeContext) finalDone() bool {
+	// TODO(v0.7): update for new evaluator?
 	for _, x := range n.exprs {
 		if x.err.Code != CycleError {
 			return false
@@ -1539,7 +1549,7 @@ func (n *nodeContext) evalExpr(v Conjunct, state vertexStatus) {
 		if state == finalized {
 			state = conjuncts
 		}
-		arc, err := ctx.resolveState(v, x, state)
+		arc, err := ctx.resolveState(v, x, oldOnly(state))
 		if err != nil && (!err.IsIncomplete() || err.Permanent) {
 			n.addBottom(err)
 			break
@@ -1576,7 +1586,7 @@ func (n *nodeContext) evalExpr(v Conjunct, state vertexStatus) {
 	case Evaluator:
 		// Interpolation, UnaryExpr, BinaryExpr, CallExpr
 		// Could be unify?
-		val := ctx.evaluateRec(v, partial)
+		val := ctx.evaluateRec(v, oldOnly(partial))
 		if b, ok := val.(*Bottom); ok &&
 			b.IsIncomplete() {
 			n.exprs = append(n.exprs, envExpr{v, b})
@@ -1689,7 +1699,7 @@ func (n *nodeContext) addVertexConjuncts(c Conjunct, arc *Vertex, inline bool) {
 		// is necessary to prevent lookups in unevaluated structs.
 		// TODO(cycles): this can probably most easily be fixed with a
 		// having a more recursive implementation.
-		n.ctx.unify(arc, partial)
+		n.ctx.unify(arc, oldOnly(partial))
 	}
 
 	// Don't add conjuncts if a node is referring to itself.
@@ -2119,7 +2129,7 @@ func (n *nodeContext) injectDynamic() (progress bool) {
 		x := d.field.Key
 		// Push state to capture and remove errors.
 		s := ctx.PushState(d.env, x.Source())
-		v := ctx.evalState(x, finalized)
+		v := ctx.evalState(x, oldOnly(finalized))
 		b := ctx.PopState(s)
 
 		if b != nil && b.IsIncomplete() {
@@ -2160,7 +2170,7 @@ func (n *nodeContext) injectDynamic() (progress bool) {
 //
 // TODO(embeddedScalars): for embedded scalars, there should be another pass
 // of evaluation expressions after expanding lists.
-func (n *nodeContext) addLists(state vertexStatus) (progress bool) {
+func (n *nodeContext) addLists(state combinedFlags) (progress bool) {
 	if len(n.lists) == 0 && len(n.vLists) == 0 {
 		return false
 	}
@@ -2246,7 +2256,7 @@ outer:
 				if err != nil {
 					if err.ForCycle && !l.self {
 						// The list has a comprehension that refers to the list
-						// itself. This means we should postpone evalauting this
+						// itself. This means we should postpone evaluating this
 						// list until all other lists have been evaluated.
 						n.lists[i].ignore = true
 						l.self = true

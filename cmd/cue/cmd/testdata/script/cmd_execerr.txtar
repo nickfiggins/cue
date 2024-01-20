@@ -12,7 +12,7 @@ task failed: command "false" failed: exit status 1
 -- canFail-stdout.golden --
 errExit:
 success=false
-hasStderr=false
+hasStderr=true
 
 errNotFound:
 success=false

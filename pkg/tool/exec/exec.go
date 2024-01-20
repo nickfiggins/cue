@@ -15,6 +15,7 @@
 package exec
 
 import (
+	"bytes"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -63,13 +64,20 @@ func (c *execCmd) Run(ctx *task.Context) (res interface{}, err error) {
 	} else if cmd.Stdin, err = v.Reader(); err != nil {
 		return nil, errors.Wrapf(err, v.Pos(), "invalid input")
 	}
-	_, captureOut := stream("stdout")
-	if !captureOut {
-		cmd.Stdout = ctx.Stdout
+
+	cmd.Stdout = ctx.Stdout
+	cmd.Stderr = ctx.Stderr
+
+	stdout := new(bytes.Buffer)
+	outVal, captureOut := stream("stdout")
+	if captureOut {
+		cmd.Stdout = stdout
 	}
-	_, captureErr := stream("stderr")
-	if !captureErr {
-		cmd.Stderr = ctx.Stderr
+
+	stderr := new(bytes.Buffer)
+	errVal, captureErr := stream("stderr")
+	if captureErr {
+		cmd.Stderr = stderr
 	}
 
 	v := object.LookupPath(cue.ParsePath("mustSucceed"))
@@ -79,25 +87,22 @@ func (c *execCmd) Run(ctx *task.Context) (res interface{}, err error) {
 	}
 
 	update := map[string]interface{}{}
-	if captureOut {
-		var stdout []byte
-		stdout, err = cmd.Output()
-		update["stdout"] = string(stdout)
-	} else {
-		err = cmd.Run()
-	}
+	err = cmd.Run()
 	update["success"] = err == nil
 
-	if err == nil {
-		return update, nil
+	if captureOut {
+		update["stdout"] = toStreamOutput(outVal, stdout)
 	}
 
 	if captureErr {
-		if exit := (*exec.ExitError)(nil); errors.As(err, &exit) {
-			update["stderr"] = string(exit.Stderr)
-		} else {
-			update["stderr"] = err.Error()
+		if stderr.Len() == 0 && err != nil {
+			_, _ = stderr.WriteString(err.Error())
 		}
+		update["stderr"] = toStreamOutput(errVal, stderr)
+	}
+
+	if err == nil {
+		return update, nil
 	}
 
 	if mustSucceed {
@@ -106,6 +111,18 @@ func (c *execCmd) Run(ctx *task.Context) (res interface{}, err error) {
 
 	return update, nil
 
+}
+
+// toStreamOutput converts a value to a string or bytes, depending on the
+// kind of the v. If multiple types are specified, it defaults to string.
+func toStreamOutput(v cue.Value, buf *bytes.Buffer) any {
+	switch v.IncompleteKind() {
+	case cue.StringKind:
+		return buf.String()
+	case cue.BytesKind:
+		return buf.Bytes()
+	}
+	return nil
 }
 
 func mkCommand(ctx *task.Context) (c *exec.Cmd, doc string, err error) {

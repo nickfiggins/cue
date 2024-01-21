@@ -94,28 +94,27 @@ func (c *execCmd) Run(ctx *task.Context) (res interface{}, err error) {
 		update["stdout"] = toStreamOutput(outVal, stdout)
 	}
 
-	if captureErr {
-		if stderr.Len() == 0 && err != nil {
-			_, _ = stderr.WriteString(err.Error())
-		}
-		update["stderr"] = toStreamOutput(errVal, stderr)
-	}
-
 	if err == nil {
 		return update, nil
 	}
 
-	if mustSucceed {
-		return nil, fmt.Errorf("command %q failed: %v", doc, err)
+	if captureErr {
+		if stderr.Len() == 0 {
+			stderr.WriteString(err.Error())
+		}
+		update["stderr"] = toStreamOutput(errVal, stderr)
 	}
 
-	return update, nil
+	if !mustSucceed {
+		return update, nil
+	}
 
+	return nil, fmt.Errorf("command %q failed: %v", doc, err)
 }
 
 // toStreamOutput converts a value to a string or bytes, depending on the
 // kind of the v. If multiple types are specified, it defaults to string.
-func toStreamOutput(v cue.Value, buf *bytes.Buffer) any {
+func toStreamOutput(v cue.Value, buf *bytes.Buffer) interface{} {
 	switch v.IncompleteKind() {
 	case cue.StringKind:
 		return buf.String()

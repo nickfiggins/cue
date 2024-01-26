@@ -1,6 +1,13 @@
 exec cue cmd run
-stdout 'Hello world!'
-
+cmp stdout run_golden.txtar
+exec cue cmd runBytes
+cmp stdout run_golden.txtar
+exec cue cmd runBytes2
+cmp stdout run_golden.txtar
+exec cue cmd runErr
+cmp stdout runerr_golden.txtar
+exec cue cmd runErrBytes
+cmp stdout runerr_golden.txtar
 -- task.cue --
 package home
 message: "Hello world!"
@@ -12,6 +19,25 @@ command: run: #RunBase & {
 	task: echo: cmd: "echo \(message)"
 }
 
+command: runBytes: #RunBaseBytes & {
+	task: echo: cmd: "echo \(message)"
+}
+
+command: runErr: #RunBase & {
+	task: echo: cmd: "false"
+}
+
+command: runErrBytes: #RunBaseBytes & {
+	task: echo: cmd: "false"
+}
+
+-- run_golden.txtar --
+stdout: Hello world!
+
+stderr: 
+-- runerr_golden.txtar --
+stdout: 
+stderr: exit status 1
 -- base_tool.cue --
 package home
 
@@ -25,9 +51,29 @@ import (
 #RunBase: {
 	task: echo: exec.Run & {
 		stdout: string
+		stderr: *"" | string
+		mustSucceed: false
 	}
 
 	task: display: cli.Print & {
-		text: task.echo.stdout
+		text: """
+		stdout: \(task.echo.stdout)
+		stderr: \(task.echo.stderr)
+		"""
+	}
+}
+
+#RunBaseBytes: {
+	task: echo: exec.Run & {
+		stdout: bytes
+		stderr: *'' | bytes
+		mustSucceed: false
+	}
+
+	task: display: cli.Print & {
+		text: """
+		stdout: \(task.echo.stdout)
+		stderr: \(task.echo.stderr)
+		"""
 	}
 }

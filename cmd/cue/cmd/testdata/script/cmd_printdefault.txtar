@@ -1,0 +1,29 @@
+exec cue cmd print
+cmp stdout expect-stdout
+
+-- expect-stdout --
+hello
+2
+
+-- task_tool.cue --
+package home
+
+import (
+	"tool/cli"
+)
+
+a: "hello"
+b: 2
+
+command: print: {
+	print: cli.Print & {
+		text: """
+        \(*"no message" | a)
+        \(*"no message" | b)
+        """
+	}
+}
+
+-- task.cue --
+package home
+-- cue.mod --

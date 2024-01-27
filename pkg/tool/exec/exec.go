@@ -94,15 +94,17 @@ func (c *execCmd) Run(ctx *task.Context) (res interface{}, err error) {
 		update["stdout"] = toStreamOutput(outVal, stdout)
 	}
 
-	if err == nil {
-		return update, nil
-	}
-
 	if captureErr {
-		if stderr.Len() == 0 {
+		if stderr.Len() == 0 && err != nil {
 			stderr.WriteString(err.Error())
 		}
 		update["stderr"] = toStreamOutput(errVal, stderr)
+	}
+
+	//fmt.Println(update)
+
+	if err == nil {
+		return update, nil
 	}
 
 	if !mustSucceed {
@@ -113,7 +115,7 @@ func (c *execCmd) Run(ctx *task.Context) (res interface{}, err error) {
 }
 
 // toStreamOutput converts a value to a string or bytes, depending on the
-// kind of the v. If multiple types are specified, it defaults to string.
+// kind of the v. If prioritizes string over bytes if both are specified.
 func toStreamOutput(v cue.Value, buf *bytes.Buffer) interface{} {
 	switch v.IncompleteKind() {
 	case cue.StringKind:
